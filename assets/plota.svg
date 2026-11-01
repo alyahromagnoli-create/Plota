@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <title>Plota</title>
+  <rect x="0" y="0" width="512" height="512" rx="112" fill="#22231f"/>
+  <path d="M174 354 V166 H258 C312 166 342 194 342 234 C342 274 312 302 258 302 H230"
+        fill="none" stroke="#f5f2e9" stroke-width="48" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

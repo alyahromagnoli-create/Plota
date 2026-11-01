@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/garrettj403/SciencePlots",
+  "commit": "b9b16959570bd2fbc9ff5118bacc423c3bddd592",
+  "files": {
+    "bright.mplstyle": "7cfd8e552f93a3962324955a44a427b49171b8ff9595d8cc0c0496ea9042f15f",
+    "ieee.mplstyle": "36f0c2a97b0fc3d3867fd602a08413573ba0598310cea668779afa23a6f1044a",
+    "LICENSE": "9e5d935909270a14c3e9dc5ede0bcfc73a69fc3411f70ddd9e05065602a46cdb",
+    "nature.mplstyle": "1d39b7974b71da2b92349f7f95d2e17f94dc83b335a0e1c18dfab522b363b0e2",
+    "no-latex.mplstyle": "a2f7749add6d6e658891fa89eb51df2ab5758f35ab36be109495fae11ac0640b",
+    "science.mplstyle": "b7ab81c1d1bc762f389a0c50c895a3f6346cbb1dfce53778d6f443a319aa9fa1"
+  }
+}

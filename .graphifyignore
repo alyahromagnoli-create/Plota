@@ -1,0 +1,13 @@
+.git/
+.venv/
+work/
+release/
+build/
+Plota_files/
+docs/
+assets/
+examples/
+licenses/
+tests/
+graphify-out/
+packaging/BUILD_VERSIONS.json
