@@ -18,15 +18,22 @@
 
 ## 功能
 
-- Excel `.xlsx/.xlsm`、CSV/TXT/TSV、LAMMPS thermo `.out/.log`；支持多个文件导入。旧 `.xls` 需转换，`.data` 不支持。
-- 折线、散点、线性/二次多项式拟合、二维数值矩阵热力图与等高线。
+- **22种输入扩展名**：Excel（含旧XLS）、ODS、CSV/TXT/TSV/DAT/ASC/XY/XVG、LAMMPS thermo OUT/LOG、JSON/JSONL/NDJSON、NPY/NPZ、Parquet/Feather、H5/HDF5；支持多个文件导入，`.data`不支持。
+- **19种图型**：折线、散点、阶梯、面积、柱状/横向柱状、误差棒/带、气泡、直方、核密度、累计分布、箱线、小提琴、森林、六边形密度、相关矩阵、矩阵热力图/等高线。折线与散点另有线性/二次拟合。
 - 多子图、跨行跨列、共享轴、对数轴、坐标范围、图例和子图编号。
 - 16:9、1:1、4:3 与自定义画布；毫米尺寸、DPI和字号可调。
 - 内嵌 SciencePlots 的 Science、IEEE、Nature、Bright 配置，保留经典风格。无外部 TeX 依赖。
+- **1,735组离线配色**：SCI Figure Gallery 1,707组、Seaborn 6组、Scientific Colour Maps 22组。搜索、色块/HEX预览、设计解读和来源信息；分类颜色与连续色图分别应用。
 - 项目 JSON 加数据快照保存；独立脚本仅依赖 NumPy 和 Matplotlib。
 - Tavotto 无参数 main 入口、静态输出文件名；PDF/SVG保留可编辑图元与文字。
 
 ![SciencePlots presets](docs/images/scienceplots-styles.png)
+
+![19 plot types](docs/images/plot-types.png)
+
+在“页面 → 配色”打开配色库：
+
+![Palette library](docs/images/palette-library.png)
 
 ## 文件怎么分享
 
@@ -42,6 +49,8 @@
 ## 文档和示例
 
 - [完整中文说明书](docs/USER_GUIDE.md)：从下载、导入、图层与布局，到项目备份、独立运行和问题排查。
+- [v7新功能速查](docs/V7_FEATURES.md)：图型参数、格式布局与配色用法。
+- [Excel示例表](examples/Plota_Example_Data.xlsx)：曲线、分组对比和热力矩阵三个工作表，可直接导入。分组表以“组别”为X，多选“测量A、测量B”为Y，选择柱状图。
 - [曲线练习](examples/curves.csv)、[矩阵练习](examples/matrix.csv)、[LAMMPS thermo 练习](examples/demo_thermo.out)：全部为合成数据。
 - Word 和 PDF 说明书在 Releases 下载。
 - [第三方说明](THIRD_PARTY_NOTICES.md)。
@@ -72,6 +81,8 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 
 ## 版本
 
-v6.0.0 是 Plota v6 首个 GitHub 公开发行版，保留原有功能，将内置示例替换为合成数据，并补充说明与构建入口。拟合为普通最小二乘，不含置信区间；矩阵图按等间距索引绘制，不做散乱点插值。
+v7.0.0在v6基础上新增图库配色、常用统计图型、结构化数据输入和分类文字快照。85项源码测试通过，最终单文件EXE验证了全部22种扩展名导入及19种图型导出，生成的脚本仅使用NumPy/Matplotlib即可精确复现PNG。拟合为普通最小二乘；误差棒/带使用输入误差值，不自动计算置信区间。
+
+图库来自[SCI Figure Gallery](https://github.com/Chutj/sci-figure-gallery)，分类配色来自[Seaborn](https://seaborn.pydata.org/tutorial/color_palettes.html)，连续色图来自[Scientific Colour Maps / cmcrameri](https://github.com/callumrollo/cmcrameri)。软件内嵌颜色与参考信息，不包含整套论文图片；图像取样色是近似值，不声称复现作者原始色标。
 
 本仓库公开提供源码供查看；未为 Plota 自有代码另行指定开源许可。第三方代码、样式与字体遵循其各自许可，SciencePlots MIT 许可随配置及每个导出包保留。

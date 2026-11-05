@@ -22,7 +22,8 @@ def _write_snapshot(project,datasets,path,include_all=False):
             ds=datasets[key]
             target=data_dir/f'dataset_{i+1}.csv'
             ds.frame.to_csv(target,index=False,encoding='utf-8',float_format='%.17g')
-            sources.append(dict(id=key,name=ds.name,file=target.relative_to(path.parent).as_posix(),source=ds.source,meta=ds.meta))
+            dtypes={str(col):'number' if pd.api.types.is_numeric_dtype(ds.frame[col]) else 'text' for col in ds.frame.columns}
+            sources.append(dict(id=key,name=ds.name,file=target.relative_to(path.parent).as_posix(),source=ds.source,meta=ds.meta,dtypes=dtypes))
         payload=dict(format='ScientificPlotStudio',version=1,project=copy.deepcopy(project),datasets=sources)
         text=json.dumps(payload,ensure_ascii=False,indent=2,allow_nan=False)
         path.write_text(text,encoding='utf-8')
@@ -52,7 +53,8 @@ def load_project(path):
         target=(base/item['file']).resolve()
         if not target.is_relative_to(base):
             raise ValueError('项目数据路径超出项目目录。')
-        f=pd.read_csv(target,float_precision='round_trip')
+        converters={col:str for col,kind in item.get('dtypes',{}).items() if kind=='text'}
+        f=pd.read_csv(target,float_precision='round_trip',converters=converters)
         datasets[item['id']]=Dataset(item['id'],item['name'],f,item.get('source',''),item.get('meta',{}))
     return payload['project'],datasets
 
@@ -69,6 +71,13 @@ def export_bundle(project,datasets,destination):
     try:
         _write_snapshot(project,datasets,stage/'project.json')
         (stage/'SciencePlots_LICENSE.txt').write_text(engine.SCIENCEPLOTS_LICENSE,encoding='utf-8')
+        palette_source=project.get('palette_sources') or project.get('palette_source')
+        if palette_source:
+            (stage/'配色来源.txt').write_text(json.dumps(palette_source,ensure_ascii=False,indent=2)+'\n取样色为近似值；配色参考不代表复现原论文的数据或分析。\n',encoding='utf-8')
+            licenses=Path(__file__).with_name('assets')/'gallery'
+            if licenses.is_dir():
+                for notice in licenses.iterdir():
+                    if notice.is_file() and notice.name!='palettes.json':shutil.copy2(notice,stage/notice.name)
         source=Path(engine.__file__)
         if not source.is_file() or source.suffix!='.py':
             source=Path(__file__).with_name('engine_source.txt')
@@ -114,12 +123,14 @@ class _NumericFrame:
         return _NumericArray(self.values[:, self.columns.index(key)])
 
 
-def _read_numeric_csv(path):
+def _read_numeric_csv(path, dtypes=None):
     with path.open('r', encoding='utf-8-sig', newline='') as handle:
         reader = csv.reader(handle)
         columns = next(reader)
-        rows = [[float(value) if value.strip() else float('nan') for value in row] for row in reader]
-    return _NumericFrame(columns, np.asarray(rows, dtype=float))
+        dtypes = dtypes or {}
+        rows = [[value if dtypes.get(columns[i]) == 'text' else (float(value) if value.strip() else float('nan')) for i,value in enumerate(row)] for row in reader]
+    mixed = any(dtypes.get(col) == 'text' for col in columns)
+    return _NumericFrame(columns, np.asarray(rows, dtype=object if mixed else float))
 
 
 def main():
@@ -130,7 +141,7 @@ def main():
         datafile = (OUT / item['file']).resolve()
         if not datafile.is_relative_to(OUT):
             raise ValueError('Data path must stay inside bundle')
-        datasets[item['id']] = SimpleNamespace(frame=_read_numeric_csv(datafile))
+        datasets[item['id']] = SimpleNamespace(frame=_read_numeric_csv(datafile,item.get('dtypes')))
     project = payload['project']
     fig = render_project(project, datasets)
     FigureCanvasAgg(fig)

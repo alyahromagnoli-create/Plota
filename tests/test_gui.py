@@ -28,6 +28,35 @@ def isolated_tk(method):
 
 class GuiWorkflowTest(unittest.TestCase):
     @isolated_tk
+    def test_gallery_picker_new_types_and_error_columns(self):
+        app=App();app.withdraw()
+        try:
+            with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1]/'work') as tmp:
+                p=Path(tmp)/'groups.csv'
+                p.write_text('group,x,y,err,size\nA,1,3,0.2,1\nB,2,4,0.3,2\nC,3,3.5,0.1,3\n',encoding='utf-8')
+                app.import_paths([str(p)])
+                app.x_var.set('x')
+                app.y_list.selection_clear(0,'end');app.y_list.selection_set(list(app.y_list.get(0,'end')).index('y'))
+                app.kind_var.set('误差棒');app.update_kind_fields();app.yerr_var.set('err')
+                app.add_layers()
+                self.assertEqual(app.project['panels'][0]['layers'][0]['yerr'],'err')
+                self.assertEqual(app.y_list.get(app.y_list.curselection()[0]),'y')
+                app.open_palette_picker();picker=app._palette_picker
+                picker.source.set('Seaborn');self.assertEqual(len(picker.filtered),6)
+                selected=picker.current;picker.apply(False)
+                self.assertEqual(app.project['panels'][0]['layers'][0]['color'],selected['colors'][0])
+                picker.source.set('Scientific Colours');picker.query.set('batlow')
+                self.assertGreaterEqual(len(picker.filtered),1)
+                app.project['panels'][0]['layers']=[]
+                app.kind_var.set('相关矩阵');app.add_layers();picker.apply(True)
+                self.assertEqual(app.project['panels'][0]['layers'][0]['cmap'],'图库渐变')
+                self.assertEqual(app.figure.axes[0].images[0].get_array().shape,(4,4))
+                app.choose_palette(None)
+                self.assertEqual(app.project['palette_colors'],[])
+                app.export_to(Path(tmp)/'export')
+        finally:app.destroy()
+
+    @isolated_tk
     def test_science_style_selection_and_manual_edits(self):
         app=App()
         app.withdraw()

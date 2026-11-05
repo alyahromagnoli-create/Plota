@@ -2,6 +2,7 @@
 from __future__ import annotations
 import csv
 import io
+import json
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -9,6 +10,9 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+SUPPORTED_EXTENSIONS={'.xlsx','.xlsm','.xls','.ods','.csv','.txt','.tsv','.dat','.asc','.xy','.xvg',
+                      '.out','.log','.json','.jsonl','.ndjson','.npy','.npz','.parquet','.feather','.h5','.hdf5'}
 
 
 @dataclass
@@ -126,19 +130,89 @@ def _is_number(value):
 
 
 def _numeric_frame(raw):
-    numeric = raw.apply(pd.to_numeric, errors='coerce')
-    numeric.columns = [str(c).strip() for c in numeric.columns]
-    keep = numeric.notna().any(axis=0)
-    dropped = [str(c) for c in numeric.columns[~keep]]
-    numeric = numeric.loc[:, keep]
-    if numeric.shape[1] == 0:
-        raise ValueError('所选范围没有数值列，请检查表头行与跳过行数。')
-    warnings = []
-    if dropped:
-        warnings.append('已排除全非数值列：' + '、'.join(dropped))
+    raw=raw.copy();raw.columns=[str(c).strip() for c in raw.columns]
+    if raw.columns.duplicated().any():raise ValueError('列名重复，请修改源表。')
+    result={};warnings=[];numeric_count=0
+    for col in raw.columns:
+        values=raw[col]
+        text=values.map(lambda v: '' if pd.isna(v) else (v.decode('utf-8') if isinstance(v,bytes) else str(v)))
+        numeric=pd.to_numeric(values,errors='coerce')
+        missing=text.str.strip().str.lower().isin(['','nan','na','null','none','n/a'])
+        nonnumeric=(~missing)&numeric.isna()
+        if nonnumeric.any() or text.str.match(r'^0\d+$').any():
+            result[col]=text
+            warnings.append('已保留分类/文本列：'+col+'；数值图请选择数值列。')
+        elif numeric.notna().any():
+            result[col]=numeric;numeric_count+=1
+    if not numeric_count:raise ValueError('所选范围没有数值列，请检查数据与表头。')
+    numeric=pd.DataFrame(result,index=raw.index).reset_index(drop=True)
     if numeric.isna().any().any():
         warnings.append('缺失或非数值单元格保留为 NaN；不自动插值。')
     return numeric, warnings
+
+
+def _from_array(path,value,name):
+    array=np.asarray(value)
+    if np.iscomplexobj(array):raise ValueError('暂不读取复数数组，请先明确实部/虚部。')
+    if array.dtype.names:
+        frame=pd.DataFrame.from_records(array)
+    elif array.ndim==1:
+        frame=pd.DataFrame({'Index':np.arange(len(array)),name:array})
+    elif array.ndim==2:
+        frame=pd.DataFrame(array,columns=[f'Column_{i+1}' for i in range(array.shape[1])])
+    else:raise ValueError(f'{name} 是{array.ndim}维数组；当前仅支持一维/二维表格，不自动切片。')
+    frame,warnings=_numeric_frame(frame)
+    return _dataset(path,frame,f'{path.name} · {name}',kind='array',warnings=warnings)
+
+
+def _structured(path,ext):
+    if ext in {'.npy','.npz'}:
+        loaded=np.load(path,allow_pickle=False)
+        if ext=='.npy':return [_from_array(path,loaded,'Value')]
+        with loaded as archive:
+            result=[];vectors={}
+            for key in archive.files:
+                a=archive[key]  # allow_pickle=False rejects object payloads.
+                if a.ndim==1 and not a.dtype.names:vectors[key]=a
+                else:result.append(_from_array(path,a,key))
+            if vectors:
+                if len({len(a) for a in vectors.values()})==1 and len(vectors)>1:
+                    frame,warnings=_numeric_frame(pd.DataFrame(vectors))
+                    result.append(_dataset(path,frame,path.name+' · vectors',warnings=warnings))
+                else:result.extend(_from_array(path,a,key) for key,a in vectors.items())
+            if not result:raise ValueError('NPZ中没有可读数组。')
+            return result
+    if ext in {'.h5','.hdf5'}:
+        import h5py
+        result=[];skipped=[]
+        with h5py.File(path,'r') as handle:
+            def visit(name,obj):
+                if isinstance(obj,h5py.Dataset):
+                    if obj.ndim in (1,2) and obj.dtype.kind in 'biufSU':result.append(_from_array(path,obj[()],name))
+                    else:skipped.append(name)
+            # visititems does not dereference external links or execute stored code.
+            handle.visititems(visit)
+        if not result:raise ValueError('HDF5中没有受支持的一维/二维数值数据集；不自动解释Pandas专用存储布局。')
+        if skipped:
+            for item in result:item.meta.setdefault('warnings',[]).append('未导入的数据集：'+', '.join(skipped))
+        return result
+    if ext in {'.json','.jsonl','.ndjson'}:
+        text=path.read_text(encoding='utf-8-sig')
+        if ext in {'.jsonl','.ndjson'}:
+            value=[json.loads(line) for line in text.splitlines() if line.strip()]
+        else:value=json.loads(text)
+        if isinstance(value,dict) and value.get('format')=='ScientificPlotStudio':
+            raise ValueError('这是Plota项目，请使用“打开项目”，不要作为数据导入。')
+        if isinstance(value,dict) and set(value)>={'columns','data'}:
+            frame=pd.DataFrame(value['data'],columns=value['columns'])
+        elif isinstance(value,list):frame=pd.DataFrame(value)
+        elif isinstance(value,dict):frame=pd.DataFrame(value)
+        else:raise ValueError('JSON须为记录数组、等长列数组或columns/data表格。')
+    elif ext=='.parquet':frame=pd.read_parquet(path,engine='pyarrow')
+    elif ext=='.feather':frame=pd.read_feather(path)
+    else:raise ValueError('不支持的结构化格式。')
+    frame,warnings=_numeric_frame(frame)
+    return [_dataset(path,frame,kind='table',warnings=warnings)]
 
 
 def load_file(path, *, sheet=None, header='auto', delimiter='auto', encoding='auto', skiprows=0):
@@ -148,23 +222,26 @@ def load_file(path, *, sheet=None, header='auto', delimiter='auto', encoding='au
     ext = path.suffix.lower()
     if ext == '.data':
         raise ValueError('按当前需求，本软件不支持 LAMMPS .data，请导入 .out。')
-    if ext not in {'.xlsx','.xlsm','.csv','.txt','.tsv','.out','.log'}:
-        raise ValueError('支持 .xlsx/.xlsm、.csv/.txt/.tsv 和 LAMMPS .out/.log。旧版 .xls 请另存为 .xlsx。')
+    if ext not in SUPPORTED_EXTENSIONS:
+        raise ValueError('不支持该格式。请使用Excel、文本表、JSON、NumPy、Parquet、Feather或HDF5。')
+    if ext in {'.json','.jsonl','.ndjson','.npy','.npz','.parquet','.feather','.h5','.hdf5'}:
+        return _structured(path,ext)
     skiprows = int(skiprows)
     if skiprows < 0:
         raise ValueError('跳过行数不能小于0。')
     hdr = None if header in ('none', None, -1) else ('auto' if header == 'auto' else int(header))
-    if ext in {'.xlsx','.xlsm'}:
+    if ext in {'.xlsx','.xlsm','.xls','.ods'}:
         result = []
-        with pd.ExcelFile(path, engine='openpyxl') as book:
+        engine={'.xls':'xlrd','.ods':'odf'}.get(ext,'openpyxl')
+        with pd.ExcelFile(path, engine=engine) as book:
             names = book.sheet_names if sheet is None else [sheet]
             for name in names:
-                raw = pd.read_excel(book, sheet_name=name, header=None, skiprows=skiprows)
+                raw = pd.read_excel(book, sheet_name=name, header=None, skiprows=skiprows,dtype=object,keep_default_na=False)
                 if raw.empty:
                     continue
                 selected = hdr
                 if hdr == 'auto':
-                    selected = None if all(_is_number(v) for v in raw.iloc[0].dropna()) else 0
+                    selected = None if all(_is_number(v) for v in raw.iloc[0].dropna() if str(v).strip()) else 0
                 if selected is not None:
                     if selected >= len(raw):
                         raise ValueError('表头行超出数据范围。')
@@ -181,7 +258,7 @@ def load_file(path, *, sheet=None, header='auto', delimiter='auto', encoding='au
     text, enc = _read_text(path,encoding)
     if ext in {'.out','.log'}:
         return _thermo(path,text)
-    lines = [s for s in text.splitlines()[skiprows:] if s.strip() and not s.lstrip().startswith('#')]
+    lines = [s for s in text.splitlines()[skiprows:] if s.strip() and not s.lstrip().startswith('#') and not (ext=='.xvg' and s.lstrip().startswith('@'))]
     if not lines:
         raise ValueError('文件没有数据行。')
     sep = delimiter
@@ -193,7 +270,7 @@ def load_file(path, *, sheet=None, header='auto', delimiter='auto', encoding='au
     sep = {'whitespace':r'\s+', '空白':r'\s+', 'tab':'\t', '\\t':'\t'}.get(sep,sep)
     tokens = re.split(r'\s+',lines[0].strip()) if sep == r'\s+' else next(csv.reader([lines[0]],delimiter=sep))
     if hdr == 'auto':
-        hdr = None if all(_is_number(t) for t in tokens) else 0
+        hdr = None if all(_is_number(t) for t in tokens if str(t).strip()) else 0
     # pandas may infer an implicit index when rows exceed header width.
     # Check widths first so no numeric field can be silently shifted or discarded.
     records = ([re.split(r'\s+',s.strip()) for s in lines] if sep == r'\s+'
@@ -206,7 +283,7 @@ def load_file(path, *, sheet=None, header='auto', delimiter='auto', encoding='au
         if len(record)!=width:
             raise ValueError(f'第{n}条记录列数为{len(record)}，预期{width}列，请检查分隔符和表头。')
     try:
-        raw = pd.read_csv(io.StringIO('\n'.join(lines)),sep=sep,engine='python',header=hdr,on_bad_lines='error')
+        raw = pd.read_csv(io.StringIO('\n'.join(lines)),sep=sep,engine='python',header=hdr,on_bad_lines='error',dtype=str,keep_default_na=False)
     except Exception as exc:
         raise ValueError('表格解析失败，请检查分隔符与表头：'+str(exc)) from exc
     if hdr is None:

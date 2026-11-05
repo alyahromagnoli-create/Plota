@@ -31,13 +31,15 @@ from tkinter import ttk, filedialog, messagebox, colorchooser
 from tkinterdnd2 import TkinterDnD, DND_FILES, COPY, REFUSE_DROP
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
-from dataio import load_file
+from dataio import load_file, SUPPORTED_EXTENSIONS
 from engine import new_project, new_panel, new_layer, render_project, dimensions_for_ratio, ratio_for_dimensions
 from engine import STYLE_NAMES, layer_style
+from engine import PLOT_NAMES
+from palette_ui import PalettePicker
 from exporter import export_bundle, save_project, load_project
 
 COLORS = ['#2563eb', '#e67e22', '#0d9488', '#9333ea', '#dc2626', '#475569']
-KINDS = {'折线': 'line', '散点': 'scatter', '矩阵热力图': 'matrix_heatmap', '矩阵等高线': 'matrix_contour'}
+KINDS = PLOT_NAMES
 FITS = {'无拟合': 'none', '线性拟合': 'linear', '二次拟合': 'quadratic'}
 
 
@@ -64,6 +66,7 @@ class App(TkinterDnD.Tk):
         self._drop_active=False
         self._drop_bounds=None
         self._syncing_global=False
+        self._palette_picker=None
         self._build()
         self.sync_global()
         self.sync_panels()
@@ -219,7 +222,7 @@ class App(TkinterDnD.Tk):
             c.create_line(middle - 10, fy + offset, middle - 10 + length, fy + offset, fill='#aaa99f', width=1, tags='import')
         c.create_text(middle, y0 + 109, text='拖入数据文件', font=('Microsoft YaHei UI', 15, 'bold'), fill=ink, tags='import')
         c.create_window(middle, y0 + 153, window=self.home_select)
-        c.create_text(middle, y0 + 191, text='.out  ·  .xlsx  ·  .csv  ·  .txt', font=('Segoe UI', 9), fill=muted, tags='import')
+        c.create_text(middle, y0 + 191, text='Excel  ·  文本  ·  JSON  ·  NumPy  ·  Parquet  ·  HDF5', font=('Segoe UI', 9), fill=muted, tags='import')
         for tag, callback in [('import', self.import_dialog), ('example', self.load_demo), ('open', self.open_dialog)]:
             c.tag_bind(tag, '<Button-1>', self.safe(lambda event, command=callback: command()))
             c.tag_bind(tag, '<Enter>', lambda event: c.configure(cursor='hand2'))
@@ -301,14 +304,22 @@ class App(TkinterDnD.Tk):
         self.info_var = tk.StringVar(value='未导入')
         ttk.Label(box, textvariable=self.info_var, foreground='#737373').grid(row=1, column=0, columnspan=2, sticky='w', pady=(2, 7))
         self.x_var, self.x_combo = self.field(box, 2, 'X', '', [''])
+        self.x_combo.bind('<<ComboboxSelected>>',lambda e:self.update_y_choices())
         ttk.Label(box, text='Y · 多选').grid(row=3, column=0, sticky='nw', pady=4)
         self.y_list = tk.Listbox(box, selectmode='extended', height=5, exportselection=False, relief='flat', highlightthickness=1, highlightbackground='#dedede', selectbackground='#e5e5e5', selectforeground='#111111', font=('Segoe UI', 9))
         self.y_list.grid(row=3, column=1, sticky='ew', pady=3)
-        self.kind_var, _ = self.field(box, 4, '类型', '折线', list(KINDS))
-        ttk.Button(box, text='添加图层', command=self.safe(self.add_layers)).grid(row=5, column=0, columnspan=2, sticky='ew', pady=(7, 5))
+        self.kind_var, self.kind_combo = self.field(box, 4, '类型', '折线', list(KINDS))
+        self.kind_combo.bind('<<ComboboxSelected>>',lambda e:self.update_kind_fields())
+        self.extra_columns=ttk.Frame(box);self.extra_columns.grid(row=5,column=0,columnspan=2,sticky='ew')
+        self.extra_columns.columnconfigure(1,weight=1)
+        self.xerr_var,self.xerr_combo=self.field(self.extra_columns,0,'X 误差','',[''])
+        self.yerr_var,self.yerr_combo=self.field(self.extra_columns,1,'Y 误差','',[''])
+        self.size_var,self.size_combo=self.field(self.extra_columns,2,'大小列','',[''])
+        self.update_kind_fields()
+        ttk.Button(box, text='添加图层', command=self.safe(self.add_layers)).grid(row=6, column=0, columnspan=2, sticky='ew', pady=(7, 5))
         more = ttk.Frame(box)
-        more.grid(row=6, column=0, columnspan=2, sticky='ew')
-        for index, (text, callback) in enumerate([('数据表', self.show_data), ('详情', self.show_details), ('导入设置', lambda: self.show_popup(self.import_options))]):
+        more.grid(row=7, column=0, columnspan=2, sticky='ew')
+        for index, (text, callback) in enumerate([('数据表', self.show_data), ('详情', self.show_details), ('导入设置', lambda: self.show_popup(self.import_options)),('用法',self.show_plot_guide)]):
             more.columnconfigure(index, weight=1, uniform='actions')
             ttk.Button(more, text=text, width=5, command=self.safe(callback)).grid(row=0, column=index, sticky='ew', padx=(0, 3))
         layers = self.group(parent, '图层')
@@ -319,8 +330,14 @@ class App(TkinterDnD.Tk):
         self.layer_list.bind('<Double-Button-1>', lambda e: self.show_popup(self.style_window))
         ttk.Button(layers, text='样式', command=lambda: self.show_popup(self.style_window)).grid(row=1, column=0, sticky='ew', pady=7, padx=(0, 4))
         ttk.Button(layers, text='删除', command=self.safe(self.remove_layer)).grid(row=1, column=1, sticky='ew', pady=7)
-        content = ttk.Frame(self.style_window, padding=14)
-        content.pack(fill='both', expand=True)
+        scroll=tk.Canvas(self.style_window,bg='white',highlightthickness=0)
+        scroll.pack(side='left',fill='both',expand=True)
+        scrollbar=ttk.Scrollbar(self.style_window,orient='vertical',command=scroll.yview);scrollbar.pack(side='right',fill='y')
+        scroll.configure(yscrollcommand=scrollbar.set)
+        content=ttk.Frame(scroll,padding=14);window=scroll.create_window((0,0),window=content,anchor='nw')
+        content.bind('<Configure>',lambda e:scroll.configure(scrollregion=scroll.bbox('all')))
+        scroll.bind('<Configure>',lambda e:scroll.itemconfigure(window,width=e.width))
+        self.style_window.bind('<MouseWheel>',lambda e:scroll.yview_scroll(int(-e.delta/120),'units'))
         style = self.group(content, '图层样式')
         self.label_var, _ = self.field(style, 0, '图例')
         self.color_var, _ = self.field(style, 1, '颜色', '#2563eb')
@@ -330,14 +347,17 @@ class App(TkinterDnD.Tk):
         self.marker_var, _ = self.field(style, 5, '标记', '无', ['无', 'o', 's', '^', 'v', 'D', '.', 'x', '+'])
         self.ms_var, _ = self.field(style, 6, '标记大小', '4')
         self.fit_var, _ = self.field(style, 7, '拟合', '无拟合', list(FITS))
-        self.cmap_var, _ = self.field(style, 8, '色图', 'viridis', ['viridis', 'plasma', 'inferno', 'magma', 'cividis', 'coolwarm', 'RdBu_r', 'Greys'])
-        self.bins_var, _ = self.field(style, 9, '等高线级数', '40')
+        self.cmap_var, _ = self.field(style, 8, '色图', 'viridis', ['viridis', 'plasma', 'inferno', 'magma', 'cividis', 'coolwarm', 'RdBu_r', 'Greys','图库渐变'])
+        self.bins_var, _ = self.field(style, 9, '分箱 / 级数', '40')
         self.row_start_var, _ = self.field(style, 10, '起始行 / 0 基')
         self.row_end_var, _ = self.field(style, 11, '终止行 / 不含')
         self.col_start_var, _ = self.field(style, 12, '起始列 / 0 基')
         self.col_end_var, _ = self.field(style, 13, '终止列 / 不含')
         ttk.Label(style, text='矩阵范围留空 = 全部', foreground='#737373').grid(row=14, column=0, columnspan=2, sticky='w', pady=5)
-        ttk.Button(style, text='应用', command=self.safe(self.apply_layer)).grid(row=15, column=0, columnspan=2, sticky='ew', pady=7)
+        self.alpha_var,_=self.field(style,15,'透明度','0.8')
+        self.barwidth_var,_=self.field(style,16,'柱宽比例','0.8')
+        self.density_var=self.check(style,17,'直方图归一化为密度')
+        ttk.Button(style, text='应用', command=self.safe(self.apply_layer)).grid(row=18, column=0, columnspan=2, sticky='ew', pady=7)
 
     def show_details(self):
         ds = self.selected_dataset()
@@ -387,7 +407,10 @@ class App(TkinterDnD.Tk):
         self.font_var, _ = self.field(box, 4, '字体', '自动', ['自动', 'DejaVu Sans', 'Arial', 'Times New Roman', 'Microsoft YaHei', 'SimHei'])
         self.fontsize_var, _ = self.field(box, 5, '字号 / pt', '10')
         self.style_var, _ = self.field(box, 6, '风格', 'Science', list(STYLE_NAMES))
-        ttk.Button(box, text='应用', style='Accent.TButton', command=self.safe(self.apply_global)).grid(row=7, column=0, columnspan=2, sticky='ew', pady=8)
+        self.palette_var=tk.StringVar(value='随风格')
+        ttk.Label(box,text='配色').grid(row=7,column=0,sticky='w')
+        ttk.Button(box,textvariable=self.palette_var,command=self.safe(self.open_palette_picker)).grid(row=7,column=1,sticky='ew',pady=3)
+        ttk.Button(box, text='应用', style='Accent.TButton', command=self.safe(self.apply_global)).grid(row=8, column=0, columnspan=2, sticky='ew', pady=8)
         self.ratio_var.trace_add('write',self.update_ratio)
         self.width_var.trace_add('write',self.update_ratio)
 
@@ -402,6 +425,70 @@ class App(TkinterDnD.Tk):
                 self.height_var.set(f'{height:.10g}')
             except ValueError:
                 pass
+
+    def update_kind_fields(self):
+        kind=KINDS[self.kind_var.get()]
+        visible={'errorbar':{0,1},'band':{1},'forest':{0},'bubble':{2},'bar':{1},'barh':{0}}.get(kind,set())
+        if hasattr(self,'fit_var') and kind not in ('line','scatter'):self.fit_var.set('无拟合')
+        for index,widget in enumerate(self.extra_columns.winfo_children()):
+            if index//2 in visible:widget.grid()
+            else:widget.grid_remove()
+
+    def show_plot_guide(self):
+        kind=KINDS[self.kind_var.get()]
+        guides={
+            'line':'X与Y为数值列。多选Y可增加多条曲线；支持线性/二次拟合。',
+            'scatter':'X与Y为数值列；每行一个点，可添加线性/二次拟合。',
+            'step':'X与Y为数值列，按输入顺序绘制中点阶梯。',
+            'area':'X与Y为数值列，填充到零基线；不支持对数Y。',
+            'bar':'X可为分类名称或数值，Y为数值；多个图层自动并排。Y误差列可选。',
+            'barh':'X选择分类名称，Y选择条长数值；多个图层自动并排。X误差列可选。',
+            'errorbar':'选择数值X/Y，再选择非负的X误差或Y误差列。区间是输入值±误差，不自动计算置信区间。',
+            'band':'选择X/Y与非负Y误差列，按X排序绘制Y±误差的阴影；不是自动统计置信带。',
+            'bubble':'X/Y为位置，大小列为非负值。气泡面积与大小列成正比；标记大小控制最大面积。',
+            'hist':'仅使用Y样本列。分箱数在图层样式中设置，可勾选归一化密度。',
+            'kde':'仅使用Y样本列。采用高斯核与Silverman经验带宽；至少两个不同值。',
+            'ecdf':'仅使用Y样本列。排序后累计概率由1/n到1，不进行分箱或拟合。',
+            'box':'每个Y图层是一组样本，显示中位数、四分位、1.5 IQR须线和离群点。',
+            'violin':'每个Y图层是一组样本；采用Matplotlib核密度形状并显示中位数，至少两个不同值。',
+            'forest':'X选择效应值，Y选择类别/研究名称，X误差列为非负半宽；无自动合并效应量。',
+            'hexbin':'X/Y为二维数值样本。六边形颜色表示计数，分箱数控制网格密度。',
+            'correlation':'自动读取当前数据集所有数值列，按每对列的共同有限行计算Pearson相关系数。常数列为缺失，不作显著性检验。',
+            'matrix_heatmap':'数据区域直接视为等间距矩阵；行列范围0基且不含终止位置。',
+            'matrix_contour':'等间距矩阵的填色等高线，不对散乱XYZ点自动插值。'}
+        messagebox.showinfo(self.kind_var.get(),guides[kind],parent=self)
+
+    def open_palette_picker(self):
+        if self._palette_picker is not None and self._palette_picker.winfo_exists():
+            self._palette_picker.deiconify();self._palette_picker.lift();return
+        self._palette_picker=PalettePicker(self,RESOURCE/'assets/gallery/palettes.json',self.safe(self.choose_palette))
+
+    def choose_palette(self,entry,gradient=False):
+        previous=copy.deepcopy(self.project)
+        try:
+            if entry is None:
+                self.project.update(palette_colors=[],palette_gradient=[],palette_label='随风格',palette_source={},palette_sources={},default_cmap='viridis')
+            else:
+                colors=entry['colors']
+                if len(colors)>12:
+                    colors=[colors[round(i*(len(colors)-1)/7)] for i in range(8)]
+                source={key:entry.get(key,'') for key in ('id','name','source','attribution','method','figure_license')}
+                self.project.update(palette_label=(entry['group']+' · '+entry['id'].split('-')[-1])[:30],palette_source=source)
+                self.project.setdefault('palette_sources',{})['continuous' if gradient else 'curves']=source
+                if gradient:self.project.update(default_cmap='图库渐变',palette_gradient=entry['colors'])
+                else:self.project['palette_colors']=colors
+            for panel in self.project['panels']:
+                for index,layer in enumerate(panel['layers']):
+                    matrix=layer['kind'] in ('matrix_heatmap','matrix_contour','correlation','hexbin')
+                    if gradient and matrix:
+                        layer.update(cmap='图库渐变',cmap_colors=list(entry['colors']))
+                    elif not gradient and not matrix:layer['color']=layer_style(self.project,index)['color']
+                    elif entry is None and layer.get('cmap')=='图库渐变':
+                        layer.update(cmap='viridis');layer.pop('cmap_colors',None)
+            self.refresh()
+        except Exception:
+            self.project=previous;raise
+        self.sync_global();self.sync_layers(self.layer_index)
 
     def selected_dataset(self):
         index = self.dataset_combo.current()
@@ -436,7 +523,8 @@ class App(TkinterDnD.Tk):
         return loaded
 
     def import_dialog(self):
-        paths = filedialog.askopenfilenames(parent=self, initialdir=str(BASE), title='导入数据（可多选）', filetypes=[('科研数据', '*.xlsx *.xls *.csv *.txt *.out'), ('Excel', '*.xlsx *.xls'), ('CSV / TXT', '*.csv *.txt'), ('LAMMPS 输出', '*.out')])
+        all_types=' '.join('*'+ext for ext in sorted(SUPPORTED_EXTENSIONS))
+        paths = filedialog.askopenfilenames(parent=self, initialdir=str(BASE), title='导入数据（可多选）', filetypes=[('支持的数据',all_types),('Excel / ODS','*.xlsx *.xlsm *.xls *.ods'),('文本 / LAMMPS','*.csv *.txt *.tsv *.dat *.asc *.xy *.xvg *.out *.log'),('结构化数据','*.json *.jsonl *.ndjson *.npy *.npz *.parquet *.feather *.h5 *.hdf5'),('所有文件','*.*')])
         if paths:
             self.import_paths(paths)
 
@@ -450,17 +538,23 @@ class App(TkinterDnD.Tk):
     def dataset_changed(self):
         ds = self.selected_dataset()
         cols = [str(c) for c in ds.frame.columns]
+        for combo in (self.xerr_combo,self.yerr_combo,self.size_combo):combo.configure(values=['']+cols)
+        for var in (self.xerr_var,self.yerr_var,self.size_var):
+            if var.get() not in cols:var.set('')
         self.x_combo['values'] = cols
         self.x_var.set('Time_ps' if 'Time_ps' in cols else (cols[0] if cols else ''))
-        ys = [c for c in cols if c != self.x_var.get()]
-        self.y_list.delete(0, 'end')
-        for col in ys:
-            self.y_list.insert('end', col)
-        if ys:
-            index = ys.index('c_mobile_temp') if 'c_mobile_temp' in ys else 0
-            self.y_list.selection_set(index)
+        self.update_y_choices(['c_mobile_temp'])
         warning_count = len(ds.meta.get('warnings', []))
         self.info_var.set(f'{len(ds.frame):,} × {len(cols)}' + (f' · {warning_count} 条提示' if warning_count else ''))
+
+    def update_y_choices(self,selected=None):
+        if selected is None:selected=[self.y_list.get(i) for i in self.y_list.curselection()]
+        ys=[str(c) for c in self.selected_dataset().frame.columns if str(c)!=self.x_var.get()]
+        self.y_list.delete(0,'end')
+        for name in ys:self.y_list.insert('end',name)
+        indices=[ys.index(name) for name in selected if name in ys]
+        for index in indices:self.y_list.selection_set(index)
+        if ys and not indices:self.y_list.selection_set(0)
 
     def show_data(self):
         ds = self.selected_dataset()
@@ -486,7 +580,7 @@ class App(TkinterDnD.Tk):
         ds = self.selected_dataset()
         kind = KINDS[self.kind_var.get()]
         ys = [self.y_list.get(i) for i in self.y_list.curselection()]
-        if kind.startswith('matrix_'):
+        if kind.startswith('matrix_') or kind=='correlation':
             ys = ['']
         if not ys:
             raise ValueError('请至少选择一个 Y 列。')
@@ -496,6 +590,9 @@ class App(TkinterDnD.Tk):
             for y in ys:
                 layer = new_layer(ds.id, self.x_var.get(), y)
                 layer.update(kind=kind, **layer_style(self.project,len(panel['layers'])))
+                if kind in ('matrix_heatmap','matrix_contour','correlation','hexbin'):
+                    layer['cmap']=self.project.get('default_cmap','viridis')
+                layer.update(xerr=self.xerr_var.get(),yerr=self.yerr_var.get(),size=self.size_var.get())
                 panel['layers'].append(layer)
             self.refresh()
         except Exception:
@@ -520,6 +617,11 @@ class App(TkinterDnD.Tk):
             return
         self.layer_index = selected[0]
         layer = self.project['panels'][self.panel_index]['layers'][self.layer_index]
+        if layer['dataset'] in self.dataset_ids:
+            self.dataset_combo.current(self.dataset_ids.index(layer['dataset']))
+            self.dataset_changed()
+            self.x_var.set(layer['x'])
+            self.update_y_choices([layer['y']])
         for var, key in [(self.label_var, 'label'), (self.color_var, 'color'), (self.lw_var, 'linewidth'), (self.ls_var, 'linestyle'), (self.ms_var, 'markersize'), (self.cmap_var, 'cmap'), (self.bins_var, 'bins')]:
             var.set(str(layer[key]))
         for key in ('row_start', 'row_end', 'col_start', 'col_end'):
@@ -527,6 +629,10 @@ class App(TkinterDnD.Tk):
         self.marker_var.set(layer['marker'] or '无')
         self.fit_var.set(next(k for k, v in FITS.items() if v == layer['fit']))
         self.kind_var.set(next(k for k, v in KINDS.items() if v == layer['kind']))
+        self.xerr_var.set(layer.get('xerr',''));self.yerr_var.set(layer.get('yerr',''));self.size_var.set(layer.get('size',''))
+        self.alpha_var.set(str(layer.get('alpha',.8)));self.barwidth_var.set(str(layer.get('width',.8)))
+        self.density_var.set(bool(layer.get('density',False)))
+        self.update_kind_fields()
 
     def pick_color(self):
         color = colorchooser.askcolor(color=self.color_var.get(), parent=self)[1]
@@ -539,6 +645,7 @@ class App(TkinterDnD.Tk):
         layers = self.project['panels'][self.panel_index]['layers']
         previous = copy.deepcopy(layers[self.layer_index])
         updated = dict(previous, kind=KINDS[self.kind_var.get()], label=self.label_var.get(), color=self.color_var.get(), linewidth=float(self.lw_var.get()), linestyle=self.ls_var.get(), markersize=float(self.ms_var.get()), marker='' if self.marker_var.get() == '无' else self.marker_var.get(), fit=FITS[self.fit_var.get()], cmap=self.cmap_var.get(), bins=int(self.bins_var.get()))
+        updated.update(xerr=self.xerr_var.get(),yerr=self.yerr_var.get(),size=self.size_var.get(),alpha=float(self.alpha_var.get()),width=float(self.barwidth_var.get()),density=bool(self.density_var.get()))
         for key in ('row_start', 'row_end', 'col_start', 'col_end'):
             value = getattr(self, key + '_var').get().strip()
             updated[key] = int(value) if value else None
@@ -560,6 +667,7 @@ class App(TkinterDnD.Tk):
 
     def sync_global(self):
         self._syncing_global=True
+        self.palette_var.set(self.project.get('palette_label','随风格'))
         self.style_var.set(next((label for label,value in STYLE_NAMES.items() if value==self.project.get('style','classic')), '经典'))
         for var, key in [(self.width_var, 'width_mm'), (self.height_var, 'height_mm'), (self.dpi_var, 'dpi'), (self.font_var, 'font'), (self.fontsize_var, 'fontsize'), (self.rows_var, 'rows'), (self.cols_var, 'cols')]:
             var.set(str(self.project[key]))
@@ -634,7 +742,7 @@ class App(TkinterDnD.Tk):
         if self.project['style'] != previous.get('style','classic'):
             for panel in self.project['panels']:
                 for index,layer in enumerate(panel['layers']):
-                    if layer['kind'] in ('line','scatter'):
+                    if layer['kind'] not in ('matrix_heatmap','matrix_contour','correlation','hexbin'):
                         layer.update(layer_style(self.project,index))
         try:
             self.refresh()
@@ -765,6 +873,40 @@ class App(TkinterDnD.Tk):
         self.sync_panels()
         self.refresh()
 
+    def smoke_gallery(self,directory,report):
+        fixtures=directory/'fixtures'
+        if not fixtures.is_dir():return
+        previous=copy.deepcopy(self.project);datasets=self.datasets.copy()
+        try:
+            loaded=self.import_paths([str(p) for p in sorted(fixtures.iterdir()) if p.suffix.lower() in SUPPORTED_EXTENSIONS])
+            report['formats']={}
+            for ds in loaded:
+                suffix=Path(ds.source).suffix.lower()
+                report['formats'].setdefault(suffix,[]).append([len(ds.frame),len(ds.frame.columns)])
+            assert set(report['formats'])==SUPPORTED_EXTENSIONS
+            ds=next(item for item in loaded if Path(item.source).suffix.lower()=='.csv')
+            palette=json.loads((RESOURCE/'assets/gallery/palettes.json').read_text(encoding='utf-8'))
+            report['palette_catalog']=len(palette['records'])
+            library=next(item for item in palette['records'] if item['id']=='seaborn-colorblind')
+            continuous=next(item for item in palette['records'] if item['id']=='crameri-batlow')
+            report['plot_types']={}
+            for kind in KINDS.values():
+                self.project=new_project();self.project.update(width_mm=140,height_mm=100,aspect_ratio='custom',dpi=100)
+                layer=new_layer(ds.id,'x','y');layer.update(kind=kind,xerr='err',yerr='err',size='size',bins=12)
+                if kind in ('bar','barh'):layer['x']='group'
+                if kind=='forest':layer.update(x='y',y='group')
+                if kind.startswith('matrix_'):layer['col_start']=1
+                self.project['panels'][0]['layers']=[layer]
+                self.panel_index=0;self.layer_index=0
+                self.choose_palette(continuous if kind in ('matrix_heatmap','matrix_contour','hexbin','correlation') else library,
+                                    kind in ('matrix_heatmap','matrix_contour','hexbin','correlation'))
+                output=self.export_to(directory/('type_'+kind))
+                report['plot_types'][kind]=str(output)
+            report['actions'].append('import_22_formats_export_19_types_gallery_palettes')
+        finally:
+            self.project=previous;self.datasets=datasets;self.panel_index=0;self.layer_index=0
+            self.sync_datasets();self.sync_global();self.sync_panels();self.refresh()
+
     def smoke(self, directory):
         directory = self.check_output_path(directory)
         directory.mkdir(parents=True, exist_ok=True)
@@ -797,6 +939,7 @@ class App(TkinterDnD.Tk):
             self.fontsize_var.set('9.5')
             self.apply_global()
             report['actions'].append('apply_page_style')
+            self.smoke_gallery(directory,report)
             report['styles']={}
             for label,name in STYLE_NAMES.items():
                 self.style_var.set(label)

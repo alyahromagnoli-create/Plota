@@ -22,6 +22,11 @@
     "altgraph": "0.17.5",
     "pefile": "2024.8.26",
     "pyinstaller-hooks-contrib": "2026.9",
-    "pywin32-ctypes": "0.2.3"
+    "pywin32-ctypes": "0.2.3",
+    "pyarrow": "26.0.1",
+    "h5py": "3.16.0",
+    "odfpy": "1.4.1",
+    "xlrd": "2.0.1",
+    "defusedxml": "0.7.1"
   }
 }

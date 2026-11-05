@@ -1,4 +1,14 @@
 * text=auto eol=lf
 *.png binary
 *.ico binary
+*.xlsx binary
+*.npy binary
+*.npz binary
+*.parquet binary
+*.feather binary
+*.h5 binary
+*.hdf5 binary
+*.xls binary
+*.xlsm binary
+*.ods binary
 licenses/** -text -whitespace
